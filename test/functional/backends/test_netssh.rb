@@ -117,6 +117,18 @@ module SSHKit
         end.run
         assert_equal File.open(file_name).read, file_contents
       end
+
+      def test_interactive_responses
+        Netssh.config.pty = true
+        Netssh.config.respond_to(/Enter sudo Password/, "awesomepassword\n")
+
+        captured = nil
+        Netssh.new(a_host) do
+          execute 'rm -f /tmp/password && read -p "Enter sudo Password" password && echo $password > /tmp/password'
+          captured = capture("cat /tmp/password")
+        end.run
+        assert_equal "awesomepassword", captured
+      end
     end
 
   end

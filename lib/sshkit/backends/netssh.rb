@@ -1,5 +1,6 @@
 require 'net/ssh'
 require 'net/scp'
+require "io/console"
 
 module Net
   module SSH
@@ -46,11 +47,30 @@ module SSHKit
         def ssh_options
           @ssh_options || {}
         end
+
+        def responses
+          @responses ||= {}
+        end
+
+        # respond_to(/Password/, 'password')
+        # respond_to(/Password/)
+        # respond_to(/Password/, noecho: true)
+        # respond_to(/Password/, once: true)
+        # respond_to(/Password/, first: true)
+        def respond_to(pattern, arg = {})
+          if arg.kind_of?(String) && !arg.end_with?("\n")
+            arg = "#{arg}\n"
+          end
+          responses[pattern] = arg
+
+          self.pty = true
+        end
       end
 
       include SSHKit::CommandHelper
 
       def run
+        ask_responses
         instance_exec(host, &@block)
       end
 
@@ -136,11 +156,17 @@ module SSHKit
                   cmd.stdout = data
                   cmd.full_stdout += data
                   output << cmd
+
+                  response = find_response(data)
+                  ch.send_data response if response
                 end
                 chan.on_extended_data do |ch, type, data|
                   cmd.stderr = data
                   cmd.full_stderr += data
                   output << cmd
+
+                  response = find_response(data)
+                  ch.send_data response if response
                 end
                 chan.on_request("exit-status") do |ch, data|
                   cmd.stdout = ''
@@ -186,6 +212,47 @@ module SSHKit
           yield conn.connection
         ensure
           self.class.pool.checkin conn
+        end
+      end
+
+      def find_response(data)
+        result = nil
+        Netssh.config.responses.each_pair do |pattern, response|
+          if data.match(pattern)
+            case response
+            when Hash
+              result = ask(pattern, noecho: response[:noecho])
+              if response[:once]
+                Netssh.config.responses[pattern] = result
+              end
+            else
+              result = response
+            end
+
+            break
+          end
+        end
+        result
+      end
+
+      def ask(pattern, options)
+        print "Enter response for '#{pattern.source}': "
+
+        io = $stdin
+        if options[:noecho]
+          io.noecho(&:gets).tap do
+            puts
+          end
+        else
+          io.gets
+        end
+      end
+
+      def ask_responses
+        Netssh.config.responses.each_pair do |pattern, response|
+          if response.kind_of?(Hash) && response[:first]
+            Netssh.config.responses[pattern] = ask(pattern, noecho: response[:noecho])
+          end
         end
       end
 
